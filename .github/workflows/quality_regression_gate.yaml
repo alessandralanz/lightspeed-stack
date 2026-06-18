@@ -1,0 +1,123 @@
+name: Quality Regression Gate
+
+on: [pull_request]
+
+jobs:
+  regression_gate:
+    runs-on: ubuntu-latest
+    name: "OKP RAG Quality Regression Check"
+
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      E2E_OPENAI_MODEL: ${{ vars.E2E_OPENAI_MODEL }}
+      FAISS_VECTOR_STORE_ID: ${{ vars.FAISS_VECTOR_STORE_ID }}
+
+    steps:
+      - name: Checkout lightspeed-stack
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      - name: Checkout lightspeed-evaluation
+        uses: actions/checkout@v4
+        with:
+          repository: alessandralanz/lightspeed-evaluation
+          ref: lcore-regression
+          path: lightspeed-evaluation
+
+      - name: Load lightspeed-stack.yaml configuration
+        run: |
+          CONFIG_FILE="./tests/e2e/configuration/library-mode/lightspeed-stack.yaml"
+
+          if [ ! -f "${CONFIG_FILE}" ]; then
+            echo "Configuration file not found: ${CONFIG_FILE}"
+            exit 1
+          fi
+
+          cp "${CONFIG_FILE}" lightspeed-stack.yaml
+          echo "Configuration loaded successfully"
+
+      - name: Select and configure run.yaml
+        run: |
+          CONFIG_FILE="./lightspeed-evaluation/tests/integration/run.yaml"
+
+          if [ ! -f "${CONFIG_FILE}" ]; then
+            echo "Configuration file not found: ${CONFIG_FILE}"
+            exit 1
+          fi
+
+          cp "$CONFIG_FILE" run.yaml
+
+      - name: Start services (Library Mode)
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          echo "Starting service in library mode"
+          docker compose -f docker-compose-library.yaml up -d
+
+          if docker compose -f docker-compose-library.yaml ps | grep -E 'Exit|exited|stopped'; then
+            echo "Service failed to start - showing logs:"
+            docker compose -f docker-compose-library.yaml logs
+            exit 1
+          else
+            echo "Service started successfully"
+          fi
+
+      - name: Wait for lightspeed-stack
+        run: |
+          echo "Waiting for service on port 8080..."
+          for i in {1..30}; do
+            if curl --output /dev/null --fail http://localhost:8080/v1/models ; then
+              echo "Service is up!"
+              exit 0
+            fi
+            echo "Still waiting... (attempt $i/30)"
+            sleep 2
+          done
+
+          echo "Service did not start in time"
+          docker compose -f docker-compose-library.yaml logs lightspeed-stack --tail=50
+          exit 1
+
+      - name: Run quality evaluation
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          cd lightspeed-evaluation
+          pip install --break-system-packages uv
+          uv sync
+
+          echo "Running OKP RAG quality evaluation suite..."
+          uv run lightspeed-eval \
+            --system-config config/lcore_regression/system-config-pr-gate.yaml \
+            --eval-data eval_data/lcore_regression/okp_rag_quality.yaml \
+            --output-dir eval_output/pr_run
+
+      - name: Compare against baseline
+        run: |
+          cd lightspeed-evaluation
+          uv run python script/regression/compare_against_baseline.py \
+            --baseline baselines/lcore_regression \
+            --current eval_output/pr_run \
+            --output eval_output/pr_run/regression_summary.md \
+            --fail-on-critical-regression
+
+      - name: Upload regression results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-results
+          path: |
+            lightspeed-evaluation/eval_output/pr_run/regression_summary.md
+            lightspeed-evaluation/eval_output/pr_run/*_summary.json
+            lightspeed-evaluation/eval_output/pr_run/*_summary.txt
+          retention-days: 30
+
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          echo "=== Regression summary ==="
+          cat lightspeed-evaluation/eval_output/pr_run/regression_summary.md 2>/dev/null || echo "No summary generated"
+          echo ""
+          echo "=== Stack logs ==="
+          docker compose -f docker-compose-library.yaml logs lightspeed-stack --tail=50
