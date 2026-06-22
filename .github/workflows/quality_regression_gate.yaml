@@ -215,16 +215,18 @@ jobs:
           docker compose -f docker-compose-library.yaml logs lightspeed-stack --tail=50 2>/dev/null || true
 
   # ================================================================
-  # Run C: PR branch + FAISS (always runs)
+  # Run C: PR branch + new OKP (only when OKP is enabled)
   # ================================================================
   run_c:
     runs-on: ubuntu-latest
-    name: "Run C: PR branch + FAISS"
+    if: vars.ENABLE_OKP_RUNS == 'true'
+    name: "Run C: PR branch + new OKP"
 
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       E2E_OPENAI_MODEL: ${{ vars.E2E_OPENAI_MODEL }}
       FAISS_VECTOR_STORE_ID: ${{ vars.FAISS_VECTOR_STORE_ID }}
+      RH_SERVER_OKP: ${{ secrets.RH_SERVER_OKP }}
 
     steps:
       - name: Checkout lightspeed-stack
@@ -254,15 +256,11 @@ jobs:
           cd lightspeed-evaluation
           uv sync
 
-      - name: Load configuration
+      - name: Load OKP configuration
         run: |
-          CONFIG_FILE="./tests/e2e/configuration/library-mode/lightspeed-stack.yaml"
-          if [ ! -f "${CONFIG_FILE}" ]; then
-            echo "Configuration file not found: ${CONFIG_FILE}"
-            exit 1
-          fi
-          cp "${CONFIG_FILE}" lightspeed-stack.yaml
-          echo "Run C: Configuration loaded (FAISS)"
+          cp tests/e2e/configuration/library-mode/lightspeed-stack-okp-regression.yaml \
+             lightspeed-stack.yaml
+          echo "Run C: OKP configuration loaded (PR branch)"
 
       - name: Start services and wait
         run: |
@@ -409,6 +407,8 @@ jobs:
             echo ""
             if [ -f "${SUMMARY_FILE}" ]; then
               cat "${SUMMARY_FILE}"
+            elif [ "${{ needs.run_c.result }}" == "skipped" ]; then
+              echo "> **Skipped:** OKP evaluation runs are disabled. Set \`ENABLE_OKP_RUNS=true\` in repository variables to enable the quality regression gate."
             else
               echo "> **Error:** Regression comparison failed. Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."
             fi
