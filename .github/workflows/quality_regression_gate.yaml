@@ -375,7 +375,7 @@ jobs:
         run: |
           cd lightspeed-evaluation
 
-          COMPARE_CMD="uv run python script/regression/compare_abc_runs.py"
+          COMPARE_CMD="uv run python -m script.regression.compare_abc_runs"
           COMPARE_CMD="${COMPARE_CMD} --run-c eval_output/abc_comparison/run_c"
           COMPARE_CMD="${COMPARE_CMD} --baseline baselines/lcore_regression"
 
